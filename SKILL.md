@@ -196,13 +196,23 @@ Upon successful artifact synchronization, the system automatically sets `uploade
 If a legacy record is missing a score or URL, the **Data Populator** (`sync_earnings_data.py`) or **Uploader** (`batch_upload_artifacts.py`) must be re-run for that specific ticker to "repair" the record.
 
 ### 6.3 Portfolio Status Tracking (kasona_portfolio_assets)
-To track client delivery progress across the entire institutional portfolio, the following columns are mandatory:
+To track client delivery progress across the entire institutional portfolio, columns are separated by lifecycle to allow for per-user exposing:
+
+**Updated by normal weekly podcast production / API data sourcing:**
+- `next_earnings_date`: Date tracking the upcoming earnings release.
+- `last_earnings_date`: Date tracking the most recently occurred earnings release.
+
+**Updated exclusively by this Quarterly Earnings Analyst Skill:**
 - `earnings_produced`: Boolean (True if status='published' in quarterly_earnings).
 - `last_earnings_period`: Text (e.g., "Q4 2025" or "FY 2025").
 - `presentation_produced`: Boolean (True if status='published' in company_presentation).
 - `last_presentation_period`: Text (e.g., "2026-03-31").
 - `production_updated_at`: Timestamp of the latest artifact synchronization.
 
+### 6.4 The `ticker_eod` Unique ID System
+To ensure we **never produce artifacts for the same company twice**, the entire system relies on `ticker_eod` as the universal unique identifier.
+- **Uniqueness Constraint:** Every row in `quarterly_earnings` must have a unique composite key combining `ticker_eod` and `fiscal_period`. 
+- **Relational Integrity:** Across layers (from `kasona_portfolio_assets` down to the `analysis_queue` and storage buckets), `ticker_eod` (e.g., `AAPL.US`, `BERG-B.ST`) is the singular anchor ID ensuring matching logic works deterministically and prevents duplication.
 ### 6.5 Required Column Matrix (Bilingual Support)
 For "DACH-Region" ready reports:
 - `pdf_report_url_de`: German PDF link.
@@ -234,3 +244,170 @@ To ensure institutional continuity, the audio generator now preserves the struct
 
 > [!IMPORTANT]
 > When uploading artifacts to Supabase, always specify the `content-type` (e.g., `application/pdf`) to prevent browser rendering issues.
+
+---
+
+## 7. Supabase Data Flow (Per-Step Reference)
+
+This section documents **every** Supabase interaction (reads, writes, storage operations) across the full pipeline, per stage and per tool.
+
+### 7.1 Stage 1 — Data Ingestion (`sync_earnings_data.py`)
+
+| Operation | Table / Bucket | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **Guard Read** | `quarterly_earnings` | `SELECT review_status` | Checks if the record for `(ticker_eod, fiscal_period)` is already `reviewed` or `approved`. If so, the script **skips** the ticker to prevent overwriting finalized content. |
+| **Upsert** | `quarterly_earnings` | `UPSERT (on_conflict: ticker_eod, fiscal_period)` | Writes ~13 columns: `ticker_eod`, `company_name`, `fiscal_period`, `eps_actual`, `eps_estimate`, `eps_surprise_percent`, `revenue_actual`, `revenue_estimate`, `impact_score`, `sentiment_score`, `executive_summary`, `company_outlook`, `company_developments`. Sets `status = 'to_review'`. |
+
+### 7.2 Stage 2 — Narrative Construction (`Giga_Expansion_1515.py`, `populate_sa_de_narratives_v4.py`, `populate_private_narratives_v3.py`)
+
+| Operation | Table / Bucket | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **Write EN narrative** | `quarterly_earnings` | `UPDATE` | Sets `markdown_content`, `review_status = 'approved'`, `uploaded = false`, `updated_at = now()` for each ticker. |
+| **Write DE narrative** | `quarterly_earnings` | `UPDATE` | Sets `markdown_content_de`, `review_status = 'approved'`, `updated_at = now()` for German-localized content. |
+| **Existence check** | `quarterly_earnings` | `SELECT id` | Confirms the record exists before attempting the UPDATE (prevents silent no-ops). |
+
+### 7.3 Stage 3 — Review & Approval (Manual / Dashboard)
+
+| Operation | Table / Bucket | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **Status flip** | `quarterly_earnings` | `UPDATE review_status` | Transitions from `pending` → `reviewed` → `approved`. Only `approved` records are eligible for the production pipeline. |
+
+### 7.4 Stage 4 — Artifact Production & Upload (`pipeline_editor.py`, `run_priority_99.py`, `run_pep_production.py`)
+
+| Operation | Table / Bucket | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **Queue fetch** | `quarterly_earnings` | `SELECT *` | Fetches all records matching `review_status = 'approved' AND uploaded = false`. Optionally filtered by `investor_profile`. |
+| **Content read** | `quarterly_earnings` | `SELECT *` | Reads `markdown_content`, `company_name`, `fiscal_period`, `impact_score`, `recommendation` for local artifact generation. |
+| **Folder lookup** | `quarterly_earnings` | `SELECT investor_profile` | Determines the storage subfolder (e.g., `991001-SA`, `991001-PEP`) for the upload path. |
+| **Portfolio mapping** | `kasona_portfolio_assets` | `SELECT ticker, portfolio_id` | Maps tickers to portfolio IDs for correct storage folder routing. |
+| **PDF upload** | Storage: `earnings-reports-pdf` | `upload()` | Uploads `{TICKER}_earnings.pdf` to `{portfolio_id}/{TICKER}_earnings.pdf` with `content-type: application/pdf`, `upsert: true`. |
+| **Audio upload** | Storage: `earnings-reports-audio` | `upload()` | Uploads `{TICKER}_audio.mp3` to `{portfolio_id}/{TICKER}_audio.mp3` with `content-type: audio/mpeg`, `upsert: true`. |
+| **URL sync** | `quarterly_earnings` | `UPDATE` | Writes `pdf_report_url`, `audio_report_url`, `generated_at = now()`. |
+| **Audit script** | `quarterly_earnings` | `UPDATE audio_script` | Archives the full TTS text script for compliance traceability. |
+| **Tracking update** | `kasona_portfolio_assets` | `UPDATE` | Sets `earnings_produced = true`, `last_earnings_period = '{period}'`, `production_updated_at = now()`. Tries `ticker_eod` first, falls back to `ticker`. |
+| **Finalize** | `quarterly_earnings` | `UPDATE` | Sets `uploaded = true`, `status = 'uploaded'`. |
+
+### 7.5 Utility: Storage Manager (`supabase_storage_manager.py`)
+
+| Operation | Table / Bucket | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **Upload** | Storage: `earnings-reports-pdf` / `earnings-reports-audio` / `earnings-reports-html` | `upload()` | Manual single-file upload with custom naming: `{ticker}/{quarter}_{year}_{filename}`. |
+| **DB update** | `quarterly_earnings` | `UPDATE` | Writes the generated public URL to `pdf_report_url`, `audio_report_url`, or `html_report_url`. |
+| **Queue update** | `analysis_queue` | `UPDATE status` | Marks the corresponding queue entry as `completed` (searches by both full ticker and root ticker). |
+
+### 7.6 Utility: Purge & Resync (`purge_and_sync_institutional.py`)
+
+| Operation | Table / Bucket | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **List files** | Storage: `earnings-reports-pdf` / `earnings-reports-audio` | `list()` | Enumerates all files in target folders (`991001-SA`, `991001-PEP`, `991001-IPO`). |
+| **Purge files** | Storage (same buckets) | `remove()` | Deletes all files in target folders (hard clean). |
+| **Ticker map** | `kasona_portfolio_assets` | `SELECT ticker_eod, portfolio_id` | Rebuilds the ticker → folder mapping for re-upload. |
+| **Re-upload** | Storage (same buckets) | `upload()` | Re-uploads local artifacts from `output/` to correct folders. |
+| **URL resync** | `quarterly_earnings` | `UPDATE` | Writes fresh `pdf_report_url`, `audio_report_url`, `investor_profile`, `generated_at`. |
+
+### 7.7 Utility: Earnings Date Enrichment (`enrich_earnings_dates.py`)
+
+| Operation | Table / Bucket | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **Asset fetch** | `kasona_portfolio_assets` | `SELECT id, portfolio_id, ticker_eod, stock_name, asset_class, next_earnings_date, last_earnings_date` | Fetches all Stock/ETF assets with a `ticker_eod`. Optionally filtered by `portfolio_id`. |
+| **Date update** | `kasona_portfolio_assets` | `UPDATE` | Writes `next_earnings_date`, `last_earnings_date`, `updated_at` for each asset ID. Uses EODHD `Earnings::History` as the data source. |
+
+### 7.8 Utility: Portfolio Audit (`final_portfolio_audit.py`)
+
+| Operation | Table / Bucket | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **Full scan** | `quarterly_earnings` | `SELECT ticker_eod, updated_at, uploaded, markdown_content` | Reads all records for compliance checks: freshness, upload status, and narrative word-count density. |
+
+---
+
+## 8. Earnings Trigger Detection
+
+### How does the skill know when a new earnings report has dropped?
+
+The detection mechanism is **portfolio-driven** via `kasona_portfolio_assets`:
+
+1. **`enrich_earnings_dates.py`** runs periodically (manually or scheduled) and calls the EODHD Fundamentals API (`Earnings::History` filter) for every stock asset in the portfolio.
+2. It writes two columns per asset:
+   - **`next_earnings_date`** — The earliest future `reportDate` found in the EODHD history.
+   - **`last_earnings_date`** — The most recent past `reportDate` with an `epsActual` value (i.e., earnings have actually been released).
+3. **Detection logic**: When `next_earnings_date` transitions from a future date to the past (or when `last_earnings_date` updates to a newer date), that signals a new earnings event has occurred.
+
+### Current Limitation: No Automated Trigger
+
+> [!WARNING]
+> There is currently **no automated event-driven trigger** that fires when earnings drop. The system relies on:
+> - Manual runs of `enrich_earnings_dates.py` to refresh the dates.
+> - A human operator comparing `last_earnings_date` against `last_earnings_period` in the same table to identify which tickers have new, un-produced earnings.
+> - Manual invocation of `sync_earnings_data.py` for the specific ticker.
+
+### Analysis Queue (Partial Integration)
+
+The `supabase_storage_manager.py` references an **`analysis_queue`** table with `ticker`, `status`, and `created_at` columns. This table could serve as the event-trigger mechanism, but it is currently only used for post-upload status marking (`status = 'completed'`), not for scheduling new production.
+
+---
+
+## 9. Known Gaps & Improvement Roadmap
+
+### 9.1 Event-Driven Earnings Trigger & Approval Guards (Priority: HIGH)
+
+**Problem**: The pipeline has no way to automatically start processing when a company releases earnings. Everything is manually invoked. However, a fully automated pipeline risks publishing bad data if the source API is corrupted.
+
+**Proposed Solution**:
+1. Schedule `enrich_earnings_dates.py` as a **daily Supabase Edge Function** or cron job.
+2. Add a database trigger or Edge Function that fires when `last_earnings_date` is updated to a value newer than `last_earnings_period`:
+   ```
+   IF NEW.last_earnings_date > OLD.last_earnings_date
+   AND NEW.last_earnings_date != last_earnings_period
+   THEN INSERT INTO analysis_queue (ticker, status) VALUES (NEW.ticker_eod, 'pending_approval')
+   ```
+3. **Guard Check:** Implement a small dashboard or manual flip process where an operator reviews `pending_approval` items. Once the underlying fundamentals look sound, flip the status to `pending_production`.
+4. The pipeline orchestrator (`pipeline_editor.py`) is updated to pull **only** `status = 'pending_production'` records from the `analysis_queue`. This isolates the automated runner to net-new, pre-verified targets.
+
+### 9.2 Centralized Supabase Client (Priority: MEDIUM)
+
+**Problem**: Every script (`sync_earnings_data.py`, `pipeline_editor.py`, `run_priority_99.py`, etc.) independently creates its own `create_client()` instance and reads env vars. Some use `SUPABASE_SERVICE_ROLE_KEY`, others use `SUPABASE_SERVICE_KEY` — inconsistent naming.
+
+**Proposed Solution**: Create a shared `utils/supabase_client.py`:
+```python
+# utils/supabase_client.py
+from supabase import create_client
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+def get_client():
+    url = os.environ["SUPABASE_URL"]
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
+    return create_client(url, key)
+```
+
+### 9.3 German Artifact Production Parity (Priority: MEDIUM)
+
+**Problem**: The pipeline generates and uploads EN PDFs and audio via `pipeline_editor.py`, but German (`_de`) artifacts are produced by separate standalone scripts (`populate_sa_de_narratives_v4.py`). There is no unified batch production for DE PDFs and DE audio.
+
+**Proposed Solution**: Extend `pipeline_editor.py` to accept a `--lang de` flag that generates DE-specific artifacts and populates `pdf_report_url_de` and `audio_report_url_de`.
+
+### 9.4 Idempotent Upload & Error Recovery (Priority: MEDIUM)
+
+**Problem**: If the pipeline crashes mid-way (e.g., PDF uploaded but audio generation fails), the record may be left in an inconsistent state (`pdf_report_url` set, `audio_report_url` null, `uploaded` still false).
+
+**Proposed Solution**:
+- Wrap each ticker's full cycle (PDF → Audio → Upload → DB Sync) in a transaction-like pattern.
+- Only set `uploaded = true` after **all** artifact URLs are confirmed non-null.
+- Add a `production_error` column for tickers that fail mid-pipeline, enabling targeted reruns.
+
+### 9.5 `analysis_queue` as the Single Entry Point (Priority: HIGH)
+
+**Problem**: The `analysis_queue` table exists and is referenced in `supabase_storage_manager.py`, but it is underutilized. It could serve as **the** unified trigger mechanism for the entire pipeline.
+
+**Proposed Solution**:
+1. The Kasona app (or a webhook from EODHD) inserts a row into `analysis_queue` when a user requests an analysis or when earnings are detected.
+2. `pipeline_editor.py` gains a `--process-queue` mode that pulls `pending` items from `analysis_queue` instead of hardcoded ticker lists.
+3. After successful production, the queue entry is marked `completed`; on failure, `failed` with an error message.
+
+### 9.6 Eliminate Hardcoded Ticker Lists (Priority: LOW)
+
+**Problem**: `run_priority_99.py`, `run_pep_production.py`, and `final_portfolio_audit.py` contain hardcoded ticker arrays (e.g., `TICKERS_99`, `TARGET_TICKERS`). These go stale as the portfolio evolves.
+
+**Proposed Solution**: All ticker lists should be sourced dynamically from `kasona_portfolio_assets` filtered by `portfolio_id`.
