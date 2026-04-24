@@ -52,8 +52,8 @@ Ticker: {ticker_eod}
 Fiscal Period: {fiscal_period}
 Impact Score: {impact_score}
 Recommendation: {recommendation}
-PDF: {pdf_report_url}
-Audio: {audio_report_url}
+PDF Report: {pdf_url}
+Audio Briefing: {audio_url}
 """
 KASONA_OUTRO_EN = "That was a Kasona production. Check out our full offering and additional research at Kasona.ai. We distill the most relevant market insights using our AI-driven analysis specifically for your portfolio. This does not constitute financial advice, buy or sell recommendations, and you are in the driver's seat with your money decisions. Feel free to read our disclaimer. Until next time!"
 
@@ -221,8 +221,8 @@ def extract_tts_text(script_path: str, metadata: dict = {}, voice: str = DEFAULT
         "fiscal_period": metadata.get("fiscal_period", "N/A"),
         "impact_score": metadata.get("impact_score", "N/A"),
         "recommendation": metadata.get("recommendation", "N/A"),
-        "pdf_report_url": metadata.get("pdf_report_url", ""),
-        "audio_report_url": metadata.get("audio_report_url", ""),
+        "pdf_url": metadata.get("pdf_url", "N/A"),
+        "audio_url": metadata.get("audio_url", "N/A"),
     }
     
     # 1. Generate Audit Script (Rich with metadata)
@@ -329,14 +329,6 @@ def main():
         help="Ticker EOD (e.g., AMZN.NASDAQ)",
     )
     parser.add_argument(
-        "--pdf-url",
-        help="PDF URL for branding",
-    )
-    parser.add_argument(
-        "--audio-url",
-        help="Audio URL for branding",
-    )
-    parser.add_argument(
         "--fiscal-period",
         help="Fiscal period (e.g., Q4 2025)",
     )
@@ -347,6 +339,14 @@ def main():
     parser.add_argument(
         "--recommendation",
         help="Institutional recommendation",
+    )
+    parser.add_argument(
+        "--pdf-url",
+        help="Public URL for the PDF report",
+    )
+    parser.add_argument(
+        "--audio-url",
+        help="Public URL for the Audio briefing",
     )
     parser.add_argument(
         "--dry-run",
@@ -374,13 +374,13 @@ def main():
 
     # Prepare metadata
     metadata = {
-        "ticker_eod": args.ticker_eod or "N/A",
-        "company_name": args.company or "the specified company",
-        "fiscal_period": args.fiscal_period or "N/A",
-        "impact_score": args.impact_score or "N/A",
-        "recommendation": args.recommendation or "N/A",
-        "pdf_report_url": args.pdf_url or "",
-        "audio_report_url": args.audio_url or "",
+        "ticker_eod": args.ticker_eod,
+        "company_name": args.company,
+        "fiscal_period": args.fiscal_period,
+        "impact_score": args.impact_score,
+        "recommendation": args.recommendation,
+        "pdf_url": args.pdf_url,
+        "audio_url": args.audio_url,
     }
 
     # Read and extract script
@@ -402,7 +402,7 @@ def main():
     target_duration_s = 420  # 7 minutes
     
     # Base rate is 150 wpm
-    base_wpm = 155 
+    base_wpm = 145 
     target_wpm = word_count / (target_duration_s / 60)
     rate_adjustment = int(((target_wpm / base_wpm) - 1) * 100)
     

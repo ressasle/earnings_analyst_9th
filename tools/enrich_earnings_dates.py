@@ -32,6 +32,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -181,7 +184,7 @@ async def enrich_all(
 
             if "error" in result:
                 if verbose:
-                    print(f"⚠️  {result['error']}")
+                    print(f"[WARNING] {result['error']}")
                 stats["errors"] += 1
                 # Rate limit even on errors
                 await asyncio.sleep(RATE_DELAY)
@@ -204,8 +207,8 @@ async def enrich_all(
                 if dry_run:
                     print(
                         f"  [DRY-RUN] {ticker} ({asset['stock_name']}): "
-                        f"next={old_next} → {next_date}, "
-                        f"last={old_last} → {last_date}"
+                        f"next={old_next} -> {next_date}, "
+                        f"last={old_last} -> {last_date}"
                     )
                     stats["updated"] += 1
                 else:
@@ -213,7 +216,7 @@ async def enrich_all(
                     stats["updated"] += 1
                     if verbose:
                         print(
-                            f"✅ next={next_date}, last={last_date}"
+                            f"[OK] next={next_date}, last={last_date}"
                         )
 
             # Rate limiting
