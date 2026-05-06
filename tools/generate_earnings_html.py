@@ -6,8 +6,8 @@ Converts a Markdown earnings report + Supabase quarterly_earnings row into a
 StockAnalysis.com-style HTML report with Kasona branding.
 
 Usage:
-    python generate_earnings_html.py beiersdorf_q4_fy2025_earnings_EN.md \\
-        --ticker BEI.XETRA \\
+    python generate_earnings_html.py reports/AMD_US_Q1_2026_earnings.md \\
+        --ticker AMD.US \\
         --supabase-project nayggiozebvwqnpjzvvn \\
         --output-dir ../output
 
@@ -40,7 +40,7 @@ except ImportError:
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def load_env():
-    env = {}
+    env = dict(os.environ)
     env_path = Path(__file__).parent.parent / ".env"
     if env_path.exists():
         with open(env_path) as f:
@@ -267,16 +267,21 @@ def image_to_data_uri(path: str) -> str:
 
 
 def signal_badge(recommendation: str | None) -> str:
+    """Render a compliance-safe signal badge. Never uses buy/sell language."""
     if not recommendation:
         return ""
     rec = recommendation.upper()
-    if any(x in rec for x in ["BUY", "ACCUMULATE"]):
-        cls, icon = "badge-buy", "✅"
-    elif any(x in rec for x in ["SELL", "REDUCE"]):
-        cls, icon = "badge-sell", "❌"
+    # Map legacy buy/sell terms to compliance-safe equivalents
+    if any(x in rec for x in ["BUY", "ACCUMULATE", "CONVICTION", "POSITIVE"]):
+        cls, icon = "badge-buy", "🟢"
+        label = "HIGH CONVICTION" if "CONVICTION" in rec else "POSITIVE OUTLOOK"
+    elif any(x in rec for x in ["SELL", "REDUCE", "UNDERWEIGHT", "NEGATIVE"]):
+        cls, icon = "badge-sell", "🔴"
+        label = "CAUTIOUS OUTLOOK"
     else:
-        cls, icon = "badge-hold", "⚠️"
-    return f'<span class="badge {cls}">{icon} {recommendation}</span>'
+        cls, icon = "badge-hold", "🟡"
+        label = "NEUTRAL / MONITORING"
+    return f'<span class="badge {cls}">{icon} {label}</span>'
 
 
 def pct_arrow(val) -> str:
@@ -494,14 +499,15 @@ def build_html(
     md_text = md_path.read_text(encoding="utf-8")
     sections = parse_md_sections(md_text)
 
-    # ── Extract key values from DB row ────────────────────────────────────────
-    company_name = db_row.get("company_name") or "Beiersdorf AG"
-    quarter = db_row.get("quarter") or "Q4"
-    fiscal_year = db_row.get("fiscal_year") or 2025
-    report_date = db_row.get("report_date") or "2026-03-03"
+    # ── Extract key values from DB row (fully dynamic, no hardcoded fallbacks) ─
+    symbol = ticker.split(".")[0].upper()
+    company_name = db_row.get("company_name") or symbol
+    quarter = db_row.get("quarter") or "—"
+    fiscal_year = db_row.get("fiscal_year") or "—"
+    report_date = db_row.get("report_date") or "—"
     impact_score = db_row.get("impact_score")
-    guidance_signal = db_row.get("guidance_signal") or "Cautious / Below Prior Year"
-    recommendation = db_row.get("recommendation") or "⚠️ HOLD / WAIT"
+    guidance_signal = db_row.get("guidance_signal") or "—"
+    recommendation = db_row.get("recommendation") or ""
     company_outlook = db_row.get("company_outlook") or ""
     company_developments = db_row.get("company_developments") or ""
     upcoming_events = db_row.get("upcoming_events") or ""
@@ -509,23 +515,41 @@ def build_html(
     price_post = db_row.get("price_movement_post_earnings")
     movement_reasoning = db_row.get("movement_reasoning") or ""
     executive_summary = db_row.get("executive_summary") or ""
+    sentiment_score = db_row.get("sentiment_score")
 
-    # Fallbacks from MD content
+    # DB-first financial fields
+    eps_actual = db_row.get("eps_actual") or ""
+    eps_estimate = db_row.get("eps_estimate") or ""
+    eps_surprise_pct = db_row.get("eps_surprise_percent")
+    revenue_actual = db_row.get("revenue_actual") or ""
+    revenue_estimate = db_row.get("revenue_estimate") or ""
+    revenue_surprise_pct = db_row.get("revenue_surprise_percent")
+
+    # Fallbacks from MD content only when DB is empty
     if impact_score is None:
-        m = re.search(r"Impact Score[:\s]+(\d+)\s*/\s*10", md_text, re.IGNORECASE)
-        impact_score = int(m.group(1)) if m else 9
+        m = re.search(r"Impact Score(?:[:\s]| of )+(\d+)\s*/\s*(?:100|10)", md_text, re.IGNORECASE)
+        impact_score = int(m.group(1)) if m else "—"
     if not executive_summary:
-        exec_section = sections.get("1. Executive Summary", "")
-        executive_summary = exec_section[:600].replace("\n", " ").strip() + "…" if exec_section else ""
+        # Try multiple common section header patterns
+        for key_candidate in ["1. Executive Summary", "1. STRATEGIC EXECUTIVE SUMMARY", "1. Strategische Zusammenfassung"]:
+            exec_section = sections.get(key_candidate, "")
+            if exec_section:
+                # Get first 300 characters without cutting a word
+                text = exec_section.replace("\n", " ").strip()
+                if len(text) > 300:
+                    executive_summary = text[:300].rsplit(' ', 1)[0] + "…"
+                else:
+                    executive_summary = text
+                break
 
-    # ── Company logo (embed as base64) ────────────────────────────────────────
+    if executive_summary and len(executive_summary) > 300:
+        executive_summary = executive_summary[:300].rsplit(' ', 1)[0] + "…"
     company_logo_html = ""
     if company_logo and os.path.exists(company_logo):
         data_uri = image_to_data_uri(company_logo)
         if data_uri:
             company_logo_html = f'<img src="{data_uri}" alt="{company_name} logo">'
     if not company_logo_html:
-        symbol = ticker.split(".")[0].upper()
         company_logo_html = f'<div class="hero-logotext">{symbol[:3]}</div>'
 
     kasona_logo_html = ""
@@ -534,21 +558,10 @@ def build_html(
         if data_uri:
             kasona_logo_html = f'<img src="{data_uri}" alt="Kasona">'
 
-    # ── Price data (pulled from MD if not in DB) ──────────────────────────────
-    price_match = re.search(r"Share Price.*?€([\d.]+)", md_text)
-    current_price = price_match.group(1) if price_match else "80.98"
-    market_cap_match = re.search(r"Market Cap.*?€([\d.]+B)", md_text)
-    market_cap = market_cap_match.group(1) if market_cap_match else "~€17.9B"
-
-    # ── Macro KPIs from MD ────────────────────────────────────────────────────
-    revenue_match = re.search(r"Revenue.*?€([\d.]+B)", md_text)
-    revenue = revenue_match.group(1) if revenue_match else "9.852B"
-    eps_match = re.search(r"Diluted EPS.*?€([\d.]+)", md_text)
-    eps = eps_match.group(1) if eps_match else "4.25"
-    ebit_match = re.search(r"EBIT Margin.*?([\d.]+%)", md_text)
-    ebit_margin = ebit_match.group(1) if ebit_match else "14.0%"
-    gross_match = re.search(r"Gross Margin.*?([\d.]+%)|Consumer Gross Margin.*?([\d.]+%)", md_text)
-    gross_margin = "57.6%"
+    # ── Price data — search MD for any currency pattern ───────────────────────
+    price_match = re.search(r"(?:Share Price|Current Price|Stock Price)[^\d]*?([\$€£]?)([\d,.]+)", md_text, re.IGNORECASE)
+    currency_symbol = price_match.group(1) if price_match else "$"
+    current_price = price_match.group(2) if price_match else "—"
 
     # ── ChartImg Technical Chart ──────────────────────────────────────────────
     chart_url = get_chartimg_url(ticker)
@@ -603,7 +616,7 @@ def build_html(
 
     # ── Price movement cards ──────────────────────────────────────────────────
     move_7d_html = pct_arrow(price_7d) if price_7d is not None else "—"
-    move_post_html = pct_arrow(price_post) if price_post is not None else pct_arrow(-20.1)
+    move_post_html = pct_arrow(price_post) if price_post is not None else "—"
 
     # ── Valuation compass ─────────────────────────────────────────────────────
     vale_section = sections.get("9. Impact Score & Valuation Framework", "") or sections.get("8. Impact Score & Valuation Framework", "")
@@ -625,28 +638,25 @@ def build_html(
   {"".join(forward_items)}
 </div>"""
 
-    # ── Margin visualization ──────────────────────────────────────────────────
-    margin_html = f"""
-<div class="card">
-  <div class="card-title">How Profit Margin Flows</div>
-  <div class="margin-row">
-    <div class="margin-label"><span>Gross Margin (After Production Costs)</span><span>57.6%</span></div>
-    <div class="margin-bar-bg"><div class="margin-bar bar-green" style="width:57.6%">57.6%</div></div>
-  </div>
-  <div class="margin-row">
-    <div class="margin-label"><span>EBIT Margin (After Operating Costs)</span><span>14.0%</span></div>
-    <div class="margin-bar-bg"><div class="margin-bar bar-blue" style="width:14.0%">14.0%</div></div>
-  </div>
-  <div class="margin-row">
-    <div class="margin-label"><span>Net Margin (After Interest &amp; Taxes)</span><span>~9.5%</span></div>
-    <div class="margin-bar-bg"><div class="margin-bar bar-slate" style="width:9.5%">9.5%</div></div>
-  </div>
-  <p class="md-p" style="margin-top:14px">
-    <strong>What this implies:</strong> The gap between gross (57.6%) and EBIT (14.0%) margin reflects heavy
-    A&amp;P investment — Beiersdorf spends aggressively on brand building (NIVEA, Eucerin, La Prairie).
-    This is the hallmark of a consumer staples compounder.
-  </p>
-</div>"""
+    # ── Margin visualization (dynamic — extracted from MD if available) ────────
+    gross_m = re.search(r"Gross Margin.*?([\d.]+)\s*%", md_text, re.IGNORECASE)
+    ebit_m = re.search(r"(?:EBIT|Operating) Margin.*?([\d.]+)\s*%", md_text, re.IGNORECASE)
+    net_m = re.search(r"Net (?:Profit )?Margin.*?([\d.]+)\s*%", md_text, re.IGNORECASE)
+
+    if gross_m or ebit_m or net_m:
+        margin_rows = ""
+        if gross_m:
+            gv = gross_m.group(1)
+            margin_rows += f'<div class="margin-row"><div class="margin-label"><span>Gross Margin</span><span>{gv}%</span></div><div class="margin-bar-bg"><div class="margin-bar bar-green" style="width:{gv}%">{gv}%</div></div></div>\n'
+        if ebit_m:
+            ev = ebit_m.group(1)
+            margin_rows += f'<div class="margin-row"><div class="margin-label"><span>Operating Margin</span><span>{ev}%</span></div><div class="margin-bar-bg"><div class="margin-bar bar-blue" style="width:{ev}%">{ev}%</div></div></div>\n'
+        if net_m:
+            nv = net_m.group(1)
+            margin_rows += f'<div class="margin-row"><div class="margin-label"><span>Net Margin</span><span>{nv}%</span></div><div class="margin-bar-bg"><div class="margin-bar bar-slate" style="width:{nv}%">{nv}%</div></div></div>\n'
+        margin_html = f'<div class="card"><div class="card-title">Margin Profile</div>{margin_rows}</div>'
+    else:
+        margin_html = ""  # No margin data found — skip section cleanly
 
     # ── Price movement card (uses DB fields) ──────────────────────────────────
     reasoning_html = f'<p class="md-p"><strong>Movement Reasoning:</strong> {md_inline(movement_reasoning)}</p>' if movement_reasoning else ""
@@ -666,78 +676,70 @@ def build_html(
   {reasoning_html}
 </div>"""
 
-    # ── Key stats left sidebar ────────────────────────────────────────────────
+    # ── Key stats left sidebar (fully dynamic from DB row) ─────────────────────
+    # Build stats items dynamically from available data
+    stats_items = []
+    if revenue_actual:
+        stats_items.append(f'<li><span class="stats-key">Revenue (Actual)</span><span class="stats-val">{revenue_actual}</span></li>')
+    if revenue_estimate:
+        stats_items.append(f'<li><span class="stats-key">Revenue (Est.)</span><span class="stats-val">{revenue_estimate}</span></li>')
+    if revenue_surprise_pct is not None:
+        stats_items.append(f'<li><span class="stats-key">Revenue Surprise</span><span class="stats-val">{pct_arrow(revenue_surprise_pct)}</span></li>')
+    if eps_actual:
+        stats_items.append(f'<li><span class="stats-key">EPS (Actual)</span><span class="stats-val">{eps_actual}</span></li>')
+    if eps_estimate:
+        stats_items.append(f'<li><span class="stats-key">EPS (Est.)</span><span class="stats-val">{eps_estimate}</span></li>')
+    if eps_surprise_pct is not None:
+        stats_items.append(f'<li><span class="stats-key">EPS Surprise</span><span class="stats-val">{pct_arrow(eps_surprise_pct)}</span></li>')
+    if current_price and current_price != "—":
+        stats_items.append(f'<li><span class="stats-key">Share Price</span><span class="stats-val">{currency_symbol}{current_price}</span></li>')
+    if sentiment_score is not None:
+        stats_items.append(f'<li><span class="stats-key">Sentiment</span><span class="stats-val">{sentiment_score}/10</span></li>')
+
+    stats_html = "\n      ".join(stats_items) if stats_items else '<li><span class="stats-key">—</span><span class="stats-val">No data available</span></li>'
+
+    # Recommendation badge
+    rec_badge = signal_badge(recommendation)
+    rec_html = f'<div class="card"><div class="card-title">Signal</div><p class="md-p">{rec_badge}</p></div>' if rec_badge else ""
+
     left_sidebar = f"""
 <div>
   <div class="card">
     <div class="card-title">Key Statistics</div>
     <ul class="stats-list">
-      <li><span class="stats-key">Market Cap</span><span class="stats-val">{market_cap}</span></li>
-      <li><span class="stats-key">52W High</span><span class="stats-val">€135.10</span></li>
-      <li><span class="stats-key">52W Low</span><span class="stats-val">€80.98 ← current</span></li>
-      <li><span class="stats-key">P/E (Trailing)</span><span class="stats-val">~19.1x</span></li>
-      <li><span class="stats-key">Forward P/E</span><span class="stats-val">~18.3x</span></li>
-      <li><span class="stats-key">EV/EBITDA</span><span class="stats-val">~9.8x</span></li>
-      <li><span class="stats-key">Beta</span><span class="stats-val">0.26 (very defensive)</span></li>
-      <li><span class="stats-key">Dividend Yield</span><span class="stats-val">~1.2%</span></li>
+      {stats_html}
     </ul>
   </div>
 
   <div class="card">
-    <div class="card-title">Segment Breakdown</div>
-    <ul class="stats-list">
-      <li><span class="stats-key">Consumer Revenue</span><span class="stats-val">€8.18B</span></li>
-      <li><span class="stats-key">→ NIVEA</span><span class="stats-val pos">+0.9%</span></li>
-      <li><span class="stats-key">→ Derma (Eucerin)</span><span class="stats-val pos">+10%+</span></li>
-      <li><span class="stats-key">→ La Prairie</span><span class="stats-val neg">-4.5%</span></li>
-      <li><span class="stats-key">→ Healthcare</span><span class="stats-val pos">+9%+</span></li>
-      <li><span class="stats-key">Tesa Revenue</span><span class="stats-val">€1.68B (+1.8%)</span></li>
-    </ul>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Signal</div>
-    <div style="text-align:center; padding: 10px 0;">{signal_badge(recommendation)}</div>
-    <p class="md-p" style="margin-top: 10px; font-size: 12px; color: var(--text-muted);">
-      Guidance shock dominates. Watch Q1 2026 results for La Prairie trajectory.
+    <div class="card-title">Guidance Signal</div>
+    <p class="md-p" style="font-size: 12px; color: var(--text-muted);">
+      {guidance_signal}
     </p>
   </div>
 
-  <div class="card">
-    <div class="card-title">Capital Returns</div>
-    <ul class="stats-list">
-      <li><span class="stats-key">2025 Dividend</span><span class="stats-val">€1.00/share</span></li>
-      <li><span class="stats-key">Payout Ratio</span><span class="stats-val">18.4%</span></li>
-      <li><span class="stats-key">Buyback Program</span><span class="stats-val">€750M / 2yr</span></li>
-      <li><span class="stats-key">Ex-Div Date</span><span class="stats-val">Apr 24, 2026</span></li>
-    </ul>
-  </div>
+  {rec_html}
 </div>"""
 
-    # ── Top metric tiles ──────────────────────────────────────────────────────
-    metric_tiles = f"""
-<div class="metric-tiles">
-  <div class="metric-tile">
-    <div class="metric-tile-label">Total Revenue (FY2025)</div>
-    <div class="metric-tile-val">€9.85B</div>
-    <div class="metric-tile-change"><span class="pos">▲ +2.4% organic</span></div>
-  </div>
-  <div class="metric-tile">
-    <div class="metric-tile-label">Net Income</div>
-    <div class="metric-tile-val">€939M</div>
-    <div class="metric-tile-change"><span></span></div>
-  </div>
-  <div class="metric-tile">
-    <div class="metric-tile-label">EPS (Diluted)</div>
-    <div class="metric-tile-val">€4.25</div>
-    <div class="metric-tile-change"><span class="pos">▲ +4.9% YoY</span></div>
-  </div>
-  <div class="metric-tile">
-    <div class="metric-tile-label">EBIT Margin</div>
-    <div class="metric-tile-val">14.0%</div>
-    <div class="metric-tile-change"><span class="pos">▲ +10bps YoY</span></div>
-  </div>
-</div>"""
+    # ── Top metric tiles (fully dynamic from DB row) ──────────────────────────
+    tile_items = []
+    if revenue_actual:
+        rev_change = f'<span>{pct_arrow(revenue_surprise_pct)} vs estimate</span>' if revenue_surprise_pct is not None else ''
+        tile_items.append(f'<div class="metric-tile"><div class="metric-tile-label">Revenue ({quarter} {fiscal_year})</div><div class="metric-tile-val">{revenue_actual}</div><div class="metric-tile-change">{rev_change}</div></div>')
+    if eps_actual:
+        eps_change = f'<span>{pct_arrow(eps_surprise_pct)} vs estimate</span>' if eps_surprise_pct is not None else ''
+        tile_items.append(f'<div class="metric-tile"><div class="metric-tile-label">EPS ({quarter} {fiscal_year})</div><div class="metric-tile-val">{eps_actual}</div><div class="metric-tile-change">{eps_change}</div></div>')
+    if impact_score and impact_score != "—":
+        tile_items.append(f'<div class="metric-tile"><div class="metric-tile-label">Impact Score</div><div class="metric-tile-val">{impact_score}/100</div><div class="metric-tile-change"></div></div>')
+    if sentiment_score is not None:
+        tile_items.append(f'<div class="metric-tile"><div class="metric-tile-label">Sentiment</div><div class="metric-tile-val">{sentiment_score}/10</div><div class="metric-tile-change"></div></div>')
+
+    # Ensure we always have at least 2 tiles for layout
+    if not tile_items:
+        tile_items.append(f'<div class="metric-tile"><div class="metric-tile-label">Ticker</div><div class="metric-tile-val">{symbol}</div><div class="metric-tile-change"></div></div>')
+        tile_items.append(f'<div class="metric-tile"><div class="metric-tile-label">Period</div><div class="metric-tile-val">{quarter} {fiscal_year}</div><div class="metric-tile-change"></div></div>')
+
+    metric_tiles = f'<div class="metric-tiles">{chr(10).join(tile_items)}</div>'
 
     generated_date = datetime.now().strftime("%B %d, %Y")
 
@@ -767,8 +769,8 @@ def build_html(
         <div class="exchange-label">{quarter} / Full Year {fiscal_year} &nbsp;|&nbsp; Reporting Date: {report_date} &nbsp;|&nbsp; Quarterly Earnings Analysis</div>
       </div>
       <div class="hero-price-block">
-        <div class="hero-price">€{current_price}</div>
-        <div class="hero-change neg">▼ -20.1% (Earnings Day)</div>
+        <div class="hero-price">{currency_symbol}{current_price}</div>
+        <div class="hero-change">{pct_arrow(price_post) if price_post is not None else ''}</div>
       </div>
     </div>
     <div class="kasona-brand">
@@ -786,12 +788,11 @@ def build_html(
     <div class="card-title">Earnings Impact Score</div>
     <div class="impact-score-row">
       <div>
-        <div class="score-big">{impact_score}<span class="score-denom">/10</span></div>
+        <div class="score-big">{impact_score}<span class="score-denom">/100</span></div>
         <div class="score-label">Earnings Impact</div>
       </div>
       <div>
-        <div style="margin-bottom:6px">{signal_badge(recommendation)}</div>
-        <div class="score-desc">{executive_summary[:300] if executive_summary else "Guidance shock dominates the investment case. Operating results are secondary."}</div>
+        <div class="score-desc">{executive_summary if executive_summary else ""}</div>
       </div>
     </div>
     {metric_tiles}
@@ -832,7 +833,7 @@ def build_html(
 def main():
     parser = argparse.ArgumentParser(description="Earnings Markdown + Supabase -> Rich HTML Dashboard")
     parser.add_argument("file", help="Markdown file to convert")
-    parser.add_argument("--ticker", default="BEI.XETRA", help="SYMBOL.EXCHANGE")
+    parser.add_argument("--ticker", required=True, help="SYMBOL.EXCHANGE (e.g. AMD.US, BEI.XETRA)")
     parser.add_argument("--supabase-project", default="nayggiozebvwqnpjzvvn", help="Supabase project ID")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--kasona-logo", default=None)

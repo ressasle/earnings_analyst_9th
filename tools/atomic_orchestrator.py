@@ -25,7 +25,8 @@ def push_to_master_index(
     fiscal_period: str,
     supabase_client: Client,
     pdf_url_de: str = None,
-    audio_url_de: str = None
+    audio_url_de: str = None,
+    html_url: str = None
 ) -> bool:
     """Push quarterly earnings metadata to public.kasona_company_reports."""
     print(f"   [INDEX] Pushing metadata for {ticker_eod}...")
@@ -61,6 +62,8 @@ def push_to_master_index(
         "review_status": "published",
         "updated_at": datetime.now().isoformat()
     }
+    if html_url:
+        payload["html_report_url"] = html_url
 
     try:
         res = supabase_client.table("kasona_company_reports").upsert(payload).execute()
@@ -168,11 +171,13 @@ def run_orchestrator():
         # 5. Log to Master Index
         pdf_url_de = record.get("pdf_report_url_de")
         audio_url_de = record.get("audio_report_url_de")
+        html_url = record.get("html_report_url")
         
         push_to_master_index(
             ticker, company, pdf_url, audio_url, fp, supabase,
             pdf_url_de=pdf_url_de, 
-            audio_url_de=audio_url_de
+            audio_url_de=audio_url_de,
+            html_url=html_url
         )
         
         print(f"[OK] Completed {ticker}")

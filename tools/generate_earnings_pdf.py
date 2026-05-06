@@ -29,12 +29,12 @@ from fpdf import FPDF
 # Konfiguration
 # ============================================================
 
-# Unicode font path (Windows)
-UNICODE_FONT_DIR = "C:/Windows/Fonts/"
-UNICODE_FONT_REGULAR = "consola.ttf"
-UNICODE_FONT_BOLD = "consolab.ttf"
-UNICODE_FONT_ITALIC = "consolai.ttf"
-UNICODE_FONT_BOLD_ITALIC = "consolaz.ttf"
+# Unicode font path (Mac)
+UNICODE_FONT_DIR = "/System/Library/Fonts/Supplemental/"
+UNICODE_FONT_REGULAR = "Arial.ttf"
+UNICODE_FONT_BOLD = "Arial Bold.ttf"
+UNICODE_FONT_ITALIC = "Arial Italic.ttf"
+UNICODE_FONT_BOLD_ITALIC = "Arial Bold Italic.ttf"
 
 # Colors (RGB) — Monochromatic Professional (Blue/Gray/Black)
 COLOR_PRIMARY_BLUE = (30, 58, 138)        # #1E3A8A — Primary Brand Blue
@@ -52,7 +52,7 @@ COLOR_COVER_BG = (15, 23, 42)           # Deep black cover
 COLOR_KASONA_ORANGE = (243, 108, 33)     # #F36C21 — Kasona Orange
 
 # Font family name
-FONT = "Consolas"
+FONT = "Arial"
 
 # Lines to skip from markdown (internal metadata — NEVER expose to clients)
 SKIP_PATTERNS = [
