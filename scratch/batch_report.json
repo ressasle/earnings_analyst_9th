@@ -1,0 +1,82 @@
+[
+  {
+    "ticker": "MRK.US",
+    "impact": 92,
+    "rec": "Accumulate",
+    "guidance": "Positive",
+    "eps": 3.59,
+    "rev": 65768.0
+  },
+  {
+    "ticker": "BP.LSE",
+    "impact": 92,
+    "rec": "Accumulate",
+    "guidance": "Positive",
+    "eps": 0.15,
+    "rev": 193005.0
+  },
+  {
+    "ticker": "LIFCO-B.ST",
+    "impact": 82,
+    "rec": "Accumulate",
+    "guidance": "Positive",
+    "eps": 8.15,
+    "rev": 28504.0
+  },
+  {
+    "ticker": "UNP.US",
+    "impact": 92,
+    "rec": "Accumulate",
+    "guidance": "Positive",
+    "eps": 12.14,
+    "rev": 24700.0
+  },
+  {
+    "ticker": "VIT-B.ST",
+    "impact": 78,
+    "rec": "Accumulate",
+    "guidance": "Positive",
+    "eps": 11.6,
+    "rev": 3686.19
+  },
+  {
+    "ticker": "AI.PA",
+    "impact": 88,
+    "rec": "Accumulate",
+    "guidance": "Positive",
+    "eps": 6.08,
+    "rev": 26940.2
+  },
+  {
+    "ticker": "DHR.US",
+    "impact": 88,
+    "rec": "Strategic Buy",
+    "guidance": "Positive",
+    "eps": 5.13,
+    "rev": 24778.0
+  },
+  {
+    "ticker": "ISRG.US",
+    "impact": 94,
+    "rec": "Accumulate",
+    "guidance": "Positive",
+    "eps": 8.14,
+    "rev": 10582.1
+  },
+  {
+    "ticker": "MMM.US",
+    "impact": 88,
+    "rec": "Accumulate",
+    "guidance": "Positive",
+    "eps": 5.15,
+    "rev": 25024.0
+  },
+  {
+    "ticker": "NEE.US",
+    "impact": 95,
+    "rec": "Accumulate",
+    "guidance": "Positive",
+    "eps": 3.88,
+    "rev": 27.87
+  }
+]

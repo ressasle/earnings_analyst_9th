@@ -495,10 +495,10 @@ def build_html(
     sections = parse_md_sections(md_text)
 
     # ── Extract key values from DB row ────────────────────────────────────────
-    company_name = db_row.get("company_name") or "Beiersdorf AG"
-    quarter = db_row.get("quarter") or "Q4"
-    fiscal_year = db_row.get("fiscal_year") or 2025
-    report_date = db_row.get("report_date") or "2026-03-03"
+    company_name = db_row.get("company_name") or ticker
+    quarter = db_row.get("quarter") or "Q1"
+    fiscal_year = db_row.get("fiscal_year") or 2026
+    report_date = db_row.get("report_date") or datetime.now().strftime("%Y-%m-%d")
     impact_score = db_row.get("impact_score")
     guidance_signal = db_row.get("guidance_signal") or "Cautious / Below Prior Year"
     recommendation = db_row.get("recommendation") or "⚠️ HOLD / WAIT"
@@ -541,14 +541,28 @@ def build_html(
     market_cap = market_cap_match.group(1) if market_cap_match else "~€17.9B"
 
     # ── Macro KPIs from MD ────────────────────────────────────────────────────
-    revenue_match = re.search(r"Revenue.*?€([\d.]+B)", md_text)
-    revenue = revenue_match.group(1) if revenue_match else "9.852B"
-    eps_match = re.search(r"Diluted EPS.*?€([\d.]+)", md_text)
-    eps = eps_match.group(1) if eps_match else "4.25"
+    # ── Macro KPIs from DB row ────────────────────────────────────────────────
+    revenue_raw = db_row.get("revenue_actual")
+    revenue = f"{float(revenue_raw):,.0f}" if revenue_raw else "N/A"
+    
+    eps_actual = db_row.get("eps_actual")
+    eps_estimate = db_row.get("eps_estimate")
+    eps = str(eps_actual) if eps_actual is not None else "N/A"
+    
+    # Try to extract from MD as fallback
+    if revenue == "N/A":
+        revenue_match = re.search(r"Revenue.*?([\d.]+B|[\d.]+M)", md_text)
+        revenue = revenue_match.group(1) if revenue_match else "N/A"
+    
+    ebit_margin = "N/A"
     ebit_match = re.search(r"EBIT Margin.*?([\d.]+%)", md_text)
-    ebit_margin = ebit_match.group(1) if ebit_match else "14.0%"
-    gross_match = re.search(r"Gross Margin.*?([\d.]+%)|Consumer Gross Margin.*?([\d.]+%)", md_text)
-    gross_margin = "57.6%"
+    if ebit_match:
+        ebit_margin = ebit_match.group(1)
+    
+    gross_margin = "N/A"
+    gross_match = re.search(r"Gross Margin.*?([\d.]+%)", md_text)
+    if gross_match:
+        gross_margin = gross_match.group(1)
 
     # ── ChartImg Technical Chart ──────────────────────────────────────────────
     chart_url = get_chartimg_url(ticker)
@@ -557,16 +571,28 @@ def build_html(
     # ── Build section HTML ────────────────────────────────────────────────────
     sections_html = ""
     section_order = [
+        ("1. STRATEGIC EXECUTIVE SUMMARY", "Strategic Executive Summary"),
         ("1. Executive Summary", "Executive Summary"),
+        ("2. THE INSTITUTIONAL INVESTMENT THESIS", "Investment Thesis"),
         ("2. Key Metrics Dashboard", "Key Metrics Dashboard"),
+        ("3. FINANCIAL DNA & CAPITAL EFFICIENCY", "Financial DNA"),
         ("3. Earnings Call — Key Takeaways", "Earnings Call Takeaways"),
+        ("4. QUARTERLY OPERATIONAL EXCELLENCE", "Operational Excellence"),
         ("4. Share Price Reaction & Technical Analysis", "Share Price Reaction"),
+        ("5. SECTOR CONTEXT & COMPETITIVE LANDSCAPE", "Sector Context"),
         ("5. Analyst Consensus & EPS Revisions", "Analyst Consensus & EPS Revisions"),
+        ("6. RISK ARCHITECTURE & MITIGATION", "Risk Architecture"),
         ("6. Sentiment & News Flow", "Sentiment & News Flow"),
-        ("7. Dividend & Capital Returns", "Dividend & Capital Returns"),
-        ("8. Impact Score & Valuation Framework", "Impact Score & Valuation Framework"),
-        ("9. Impact Score & Valuation Framework", "Impact Score & Valuation Framework"),
-        ("10. CIO Conclusion & Positioning Recommendation", "CIO Conclusion"),
+        ("6B. ALTERNATIVE PERSPECTIVE & RISK COUNTERPOINTS", "Risk Counterpoints"),
+        ("6C. SUPPLEMENTAL ANALYST NOTES (MANUAL INGESTION)", "Supplemental Analyst Notes"),
+        ("7. STRATEGIC ROADMAP & 2026 TARGETS", "Strategic Roadmap"),
+        ("8. CORPORATE GOVERNANCE & ESG LEADERSHIP", "Governance & ESG"),
+        ("9. DETAILED METRIC HARMONISATION", "Metric Harmonisation"),
+        ("10. SUPPLEMENTAL SECTOR ANALYSIS: THE MACRO SUPER-CYCLE", "Sector Analysis"),
+        ("11. GEOGRAPHIC FOOTPRINT & REGIONAL DYNAMICS", "Geographic Footprint"),
+        ("12. INNOVATION PIPELINE: THE NEXT FRONTIER", "Innovation Pipeline"),
+        ("13. INSTITUTIONAL AUDIT: THE LEADERSHIP PERSPECTIVE", "Leadership Perspective"),
+        ("14. CONCLUSION & FORWARD CONTEXT", "Conclusion"),
     ]
     rendered_keys = set()
     for key, label in section_order:
@@ -626,25 +652,21 @@ def build_html(
 </div>"""
 
     # ── Margin visualization ──────────────────────────────────────────────────
-    margin_html = f"""
+    margin_html = ""
+    if ebit_margin != "N/A" and gross_margin != "N/A":
+        margin_html = f"""
 <div class="card">
   <div class="card-title">How Profit Margin Flows</div>
   <div class="margin-row">
-    <div class="margin-label"><span>Gross Margin (After Production Costs)</span><span>57.6%</span></div>
-    <div class="margin-bar-bg"><div class="margin-bar bar-green" style="width:57.6%">57.6%</div></div>
+    <div class="margin-label"><span>Gross Margin</span><span>{gross_margin}</span></div>
+    <div class="margin-bar-bg"><div class="margin-bar bar-green" style="width:{gross_margin}">{gross_margin}</div></div>
   </div>
   <div class="margin-row">
-    <div class="margin-label"><span>EBIT Margin (After Operating Costs)</span><span>14.0%</span></div>
-    <div class="margin-bar-bg"><div class="margin-bar bar-blue" style="width:14.0%">14.0%</div></div>
-  </div>
-  <div class="margin-row">
-    <div class="margin-label"><span>Net Margin (After Interest &amp; Taxes)</span><span>~9.5%</span></div>
-    <div class="margin-bar-bg"><div class="margin-bar bar-slate" style="width:9.5%">9.5%</div></div>
+    <div class="margin-label"><span>EBIT Margin</span><span>{ebit_margin}</span></div>
+    <div class="margin-bar-bg"><div class="margin-bar bar-blue" style="width:{ebit_margin}">{ebit_margin}</div></div>
   </div>
   <p class="md-p" style="margin-top:14px">
-    <strong>What this implies:</strong> The gap between gross (57.6%) and EBIT (14.0%) margin reflects heavy
-    A&amp;P investment — Beiersdorf spends aggressively on brand building (NIVEA, Eucerin, La Prairie).
-    This is the hallmark of a consumer staples compounder.
+    <strong>Margin Analysis:</strong> The spread between gross and operating margins reflects the structural overhead and reinvestment intensity required to maintain competitive positioning.
   </p>
 </div>"""
 
@@ -667,22 +689,9 @@ def build_html(
 </div>"""
 
     # ── Key stats left sidebar ────────────────────────────────────────────────
-    left_sidebar = f"""
-<div>
-  <div class="card">
-    <div class="card-title">Key Statistics</div>
-    <ul class="stats-list">
-      <li><span class="stats-key">Market Cap</span><span class="stats-val">{market_cap}</span></li>
-      <li><span class="stats-key">52W High</span><span class="stats-val">€135.10</span></li>
-      <li><span class="stats-key">52W Low</span><span class="stats-val">€80.98 ← current</span></li>
-      <li><span class="stats-key">P/E (Trailing)</span><span class="stats-val">~19.1x</span></li>
-      <li><span class="stats-key">Forward P/E</span><span class="stats-val">~18.3x</span></li>
-      <li><span class="stats-key">EV/EBITDA</span><span class="stats-val">~9.8x</span></li>
-      <li><span class="stats-key">Beta</span><span class="stats-val">0.26 (very defensive)</span></li>
-      <li><span class="stats-key">Dividend Yield</span><span class="stats-val">~1.2%</span></li>
-    </ul>
-  </div>
-
+    segment_html = ""
+    if ticker == "BEI.XETRA":
+        segment_html = """
   <div class="card">
     <div class="card-title">Segment Breakdown</div>
     <ul class="stats-list">
@@ -693,24 +702,28 @@ def build_html(
       <li><span class="stats-key">→ Healthcare</span><span class="stats-val pos">+9%+</span></li>
       <li><span class="stats-key">Tesa Revenue</span><span class="stats-val">€1.68B (+1.8%)</span></li>
     </ul>
+  </div>"""
+
+    left_sidebar = f"""
+<div>
+  <div class="card">
+    <div class="card-title">Key Statistics</div>
+    <ul class="stats-list">
+      <li><span class="stats-key">Market Cap</span><span class="stats-val">{market_cap}</span></li>
+      <li><span class="stats-key">P/E (Trailing)</span><span class="stats-val">Analyzed</span></li>
+      <li><span class="stats-key">Reported EPS</span><span class="stats-val">{eps}</span></li>
+      <li><span class="stats-key">Reported Revenue</span><span class="stats-val">{revenue}</span></li>
+    </ul>
   </div>
+
+  {segment_html}
 
   <div class="card">
     <div class="card-title">Signal</div>
     <div style="text-align:center; padding: 10px 0;">{signal_badge(recommendation)}</div>
     <p class="md-p" style="margin-top: 10px; font-size: 12px; color: var(--text-muted);">
-      Guidance shock dominates. Watch Q1 2026 results for La Prairie trajectory.
+      {executive_summary[:150] if executive_summary else "Institutional assessment complete."}
     </p>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Capital Returns</div>
-    <ul class="stats-list">
-      <li><span class="stats-key">2025 Dividend</span><span class="stats-val">€1.00/share</span></li>
-      <li><span class="stats-key">Payout Ratio</span><span class="stats-val">18.4%</span></li>
-      <li><span class="stats-key">Buyback Program</span><span class="stats-val">€750M / 2yr</span></li>
-      <li><span class="stats-key">Ex-Div Date</span><span class="stats-val">Apr 24, 2026</span></li>
-    </ul>
   </div>
 </div>"""
 
@@ -718,24 +731,24 @@ def build_html(
     metric_tiles = f"""
 <div class="metric-tiles">
   <div class="metric-tile">
-    <div class="metric-tile-label">Total Revenue (FY2025)</div>
-    <div class="metric-tile-val">€9.85B</div>
-    <div class="metric-tile-change"><span class="pos">▲ +2.4% organic</span></div>
+    <div class="metric-tile-label">Total Revenue</div>
+    <div class="metric-tile-val">{revenue}</div>
+    <div class="metric-tile-change"><span class="pos">Reported Actual</span></div>
   </div>
   <div class="metric-tile">
-    <div class="metric-tile-label">Net Income</div>
-    <div class="metric-tile-val">€939M</div>
+    <div class="metric-tile-label">EPS (Actual)</div>
+    <div class="metric-tile-val">{eps}</div>
     <div class="metric-tile-change"><span></span></div>
   </div>
   <div class="metric-tile">
-    <div class="metric-tile-label">EPS (Diluted)</div>
-    <div class="metric-tile-val">€4.25</div>
-    <div class="metric-tile-change"><span class="pos">▲ +4.9% YoY</span></div>
+    <div class="metric-tile-label">EPS (Estimate)</div>
+    <div class="metric-tile-val">{eps_estimate if eps_estimate is not None else "N/A"}</div>
+    <div class="metric-tile-change"><span>Forecast</span></div>
   </div>
   <div class="metric-tile">
     <div class="metric-tile-label">EBIT Margin</div>
-    <div class="metric-tile-val">14.0%</div>
-    <div class="metric-tile-change"><span class="pos">▲ +10bps YoY</span></div>
+    <div class="metric-tile-val">{ebit_margin}</div>
+    <div class="metric-tile-change"><span>Operating</span></div>
   </div>
 </div>"""
 

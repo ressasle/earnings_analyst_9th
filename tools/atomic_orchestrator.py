@@ -3,19 +3,20 @@ import subprocess
 import sys
 import time
 from datetime import datetime
-from supabase import create_client, Client
 from dotenv import load_dotenv
+
+# Ensure project root is in sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from supabase import Client
+from utils.supabase_client import get_supabase_client
 
 load_dotenv()
 
+# Centralized client
+supabase = get_supabase_client()
+# Get URL for storage links (needed by scripts)
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    print("[!] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing.")
-    sys.exit(1)
-
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def push_to_master_index(
     ticker_eod: str,
@@ -63,17 +64,24 @@ def push_to_master_index(
     }
 
     try:
-        res = supabase_client.table("kasona_company_reports").upsert(payload).execute()
+        res = supabase_client.table("kasona_company_reports").upsert(
+            payload,
+            on_conflict="ticker_eod,skill_id"
+        ).execute()
         return len(res.data) > 0
     except Exception as exc:
         print(f"   [!] Master Index error: {exc}")
         return False
 
-def run_orchestrator():
-    print("[*] Atomic Orchestrator: Starting production for all 'approved' records...")
+def run_orchestrator(target_ticker=None):
+    print(f"[*] Atomic Orchestrator: Starting production...")
     
     # 1. Fetch approved records
-    res = supabase.table("quarterly_earnings").select("*").eq("review_status", "approved").execute()
+    query = supabase.table("quarterly_earnings").select("*").eq("review_status", "approved").eq("fiscal_period", "Q1 2026")
+    if target_ticker:
+        query = query.eq("ticker_eod", target_ticker)
+        
+    res = query.execute()
     records = res.data
     
     if not records:
@@ -84,12 +92,14 @@ def run_orchestrator():
     
     for record in records:
         ticker = record["ticker_eod"]
-        fp = record.get("fiscal_period", "Q1 2026")
-        quarter = record.get("quarter", "Q1")
-        year = record.get("fiscal_year", 2026)
-        company = record.get("company_name", ticker)
+        fp = record.get("fiscal_period") or "Q1 2026"
+        company = record.get("company_name") or ticker
+        quarter = record.get("quarter") or "Q1"
+        year = record.get("fiscal_year") or 2026
         
         print(f"\n[>>>] Processing {ticker} - {fp}")
+        if record.get("manual_ingestion"):
+            print(f"   [MANUAL] Source: {record['manual_ingestion']}")
         
         md_file = f"output/{ticker}_{fp.replace(' ', '_')}.md"
         with open(md_file, "w", encoding="utf-8") as f:
@@ -102,36 +112,59 @@ def run_orchestrator():
         
         # 2. Generate Audio (Neural)
         print(f"   [+] Generating Audio...")
-        pdf_name = f"{ticker}_earnings.pdf" # PDF script outputs this
-        mp3_name = f"{ticker}_audio.mp3"
-        
-        # Construct public URL for branding (heuristic from scripts)
-        # Note: the actual upload will happen next, but the script puts these URLs IN the audio script
+        sys.stdout.flush()
+        pdf_name = f"{ticker}_{fp.replace(' ', '_')}.pdf"
+        mp3_name = f"{ticker}_{fp.replace(' ', '_')}.mp3"
+
+        # Construct public URLs for branding
         pdf_url = f"{SUPABASE_URL}/storage/v1/object/public/earnings-reports-pdf/{ticker}/{quarter}_{year}_{pdf_name}"
         audio_url = f"{SUPABASE_URL}/storage/v1/object/public/earnings-reports-audio/{ticker}/{quarter}_{year}_{mp3_name}"
 
-        subprocess.run([
+        # Derive benchmark label from stored ticker (QQQ → Nasdaq-100, else S&P 500)
+        bm_ticker_stored = record.get("benchmark_ticker", "")
+        benchmark_label = "Nasdaq-100" if str(bm_ticker_stored).upper() == "QQQ" else "S&P 500"
+
+        cmd_args = [
             "python", "tools/generate_audio.py",
-            "--script", md_file,
-            "--company", company,
-            "--ticker-eod", ticker,
-            "--pdf-url", pdf_url,
-            "--audio-url", audio_url,
-            "--fiscal-period", fp,
+            "--script", str(md_file),
+            "--company", str(company),
+            "--ticker-eod", str(ticker),
+            "--pdf-url", str(pdf_url),
+            "--audio-url", str(audio_url),
+            "--fiscal-period", str(fp),
             "--impact-score", str(record.get("impact_score", "N/A")),
-            "--recommendation", str(record.get("recommendation", "N/A")),
-            "--output", f"output/{mp3_name}"
-        ], check=False)
+            "--output", f"output/{mp3_name}",
+        ]
+
+        # Inject market reaction args when populated by enrich_price_movements.py
+        move_7d = record.get("price_movement_7d_prior")
+        move_post = record.get("price_movement_post_earnings")
+        bm_move = record.get("benchmark_move_post")
+        rel_perf = record.get("relative_performance")
+
+        if move_7d is not None:
+            cmd_args += ["--move-7d", str(move_7d)]
+        if move_post is not None:
+            cmd_args += ["--move-post", str(move_post)]
+        if bm_ticker_stored:
+            cmd_args += ["--benchmark-label", benchmark_label]
+        if bm_move is not None:
+            cmd_args += ["--benchmark-move", str(bm_move)]
+        if rel_perf is not None:
+            cmd_args += ["--relative-perf", str(rel_perf)]
+
+        subprocess.run(cmd_args, check=False)
         
         # 3. Sync to Storage
         print(f"   [+] Syncing to Supabase Storage...")
+        sys.stdout.flush()
         # PDF
         subprocess.run([
             "python", "tools/supabase_storage_manager.py",
             "--file", f"output/{pdf_name}",
             "--bucket", "earnings-reports-pdf",
-            "--ticker", ticker,
-            "--quarter", quarter,
+            "--ticker", str(ticker),
+            "--quarter", str(quarter),
             "--year", str(year),
             "--update-db" # Updates quarterly_earnings
         ], check=False)
@@ -141,41 +174,40 @@ def run_orchestrator():
             "python", "tools/supabase_storage_manager.py",
             "--file", f"output/{mp3_name}",
             "--bucket", "earnings-reports-audio",
-            "--ticker", ticker,
-            "--quarter", quarter,
+            "--ticker", str(ticker),
+            "--quarter", str(quarter),
+            "--year", str(year),
+            "--update-db" # Updates quarterly_earnings
+        ], check=False)
+
+        # HTML
+        html_name = f"{ticker}_{fp.replace(' ', '_')}.html"
+        subprocess.run([
+            "python", "tools/supabase_storage_manager.py",
+            "--file", f"output/{html_name}",
+            "--bucket", "earnings-reports-html",
+            "--ticker", str(ticker),
+            "--quarter", str(quarter),
             "--year", str(year),
             "--update-db" # Updates quarterly_earnings
         ], check=False)
         
-        # 4. Log to Artifacts Table
-        # Fetch audit script saved by generate_audio.py
-        script_path = f"output/{mp3_name.replace('.mp3', '.txt')}"
-        audio_script = ""
-        if os.path.exists(script_path):
-            with open(script_path, "r", encoding="utf-8") as asf:
-                audio_script = asf.read()
-
-        artifact_data = {
-            "earnings_id": record["id"],
-            "ticker_eod": ticker,
-            "fiscal_period": fp,
-            "pdf_url": pdf_url,
-            "audio_url": audio_url,
-            "audio_script": audio_script
-        }
-        supabase.table("quarterly_earnings_artifacts").insert(artifact_data).execute()
-        
-        # 5. Log to Master Index
+        # 4. Push to Master Index (kasona_company_reports)
         pdf_url_de = record.get("pdf_report_url_de")
         audio_url_de = record.get("audio_report_url_de")
         
         push_to_master_index(
             ticker, company, pdf_url, audio_url, fp, supabase,
-            pdf_url_de=pdf_url_de, 
+            pdf_url_de=pdf_url_de,
             audio_url_de=audio_url_de
         )
         
         print(f"[OK] Completed {ticker}")
 
 if __name__ == "__main__":
-    run_orchestrator()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ticker", help="Specific ticker to process")
+    args = parser.parse_args()
+    
+    run_orchestrator(target_ticker=args.ticker)

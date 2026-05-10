@@ -29,10 +29,17 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+# Add project root to sys.path
+root_dir = Path(__file__).resolve().parent.parent
+if str(root_dir) not in sys.path:
+    sys.path.append(str(root_dir))
 
 import aiohttp
 from dotenv import load_dotenv
+from utils.supabase_client import get_supabase_client
 
 load_dotenv()
 
@@ -101,13 +108,6 @@ async def fetch_earnings_history(
 
 
 # ── Supabase: Read & Write ───────────────────────────────────────────────────
-
-def get_supabase_client():
-    """Lazy-init Supabase client."""
-    from supabase import create_client
-    url = os.environ["SUPABASE_URL"]
-    key = os.environ["SUPABASE_SERVICE_KEY"]
-    return create_client(url, key)
 
 
 def fetch_stock_assets(sb, portfolio_id: str | None = None) -> list[dict]:

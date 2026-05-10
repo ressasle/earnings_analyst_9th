@@ -13,8 +13,12 @@ import json
 import argparse
 import requests
 from datetime import datetime
-from supabase import create_client, Client
 from dotenv import load_dotenv
+from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(BASE_DIR))
+
+from utils.supabase_client import get_supabase_client
 
 # Import the deterministic calculator
 sys.path.append(os.path.dirname(__file__))
@@ -32,14 +36,12 @@ load_dotenv()
 
 # Configuration
 EODHD_API_KEY = os.environ.get("EODHD_API_KEY")
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-if not all([EODHD_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
-    print("❌ Missing environment variables (EODHD_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY).")
+if not EODHD_API_KEY:
+    print("❌ Missing environment variable EODHD_API_KEY.")
     sys.exit(1)
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = get_supabase_client()
 
 def get_eodhd_fundamentals(ticker):
     url = f"https://eodhd.com/api/fundamentals/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
@@ -54,12 +56,17 @@ def get_eodhd_sentiment(ticker):
 def sync_ticker(ticker, fiscal_period="Q4", fiscal_year=2025):
     print(f"[*] Syncing {ticker} for {fiscal_period} {fiscal_year}...")
     
-    # Pre-check: Don't overwrite reviewed/approved records
-    res_check = supabase.table("quarterly_earnings").select("review_status").eq("ticker_eod", ticker).eq("fiscal_period", f"{fiscal_period} {fiscal_year}").execute()
+    # Pre-check: Don't overwrite reviewed/approved records or manually ingested content
+    res_check = supabase.table("quarterly_earnings").select("review_status, manual_ingestion").eq("ticker_eod", ticker).eq("fiscal_period", f"{fiscal_period} {fiscal_year}").execute()
     if res_check.data:
-        current_status = res_check.data[0].get("review_status")
+        row = res_check.data[0]
+        current_status = row.get("review_status")
+        manual_ingestion = row.get("manual_ingestion")
         if current_status in ["reviewed", "approved"]:
             print(f"[*] Skipping {ticker}: Record is already {current_status}.")
+            return
+        if manual_ingestion:
+            print(f"[*] Skipping {ticker}: Record has manual_ingestion data — will not overwrite with API sync.")
             return
 
     fundamentals = get_eodhd_fundamentals(ticker)
@@ -146,7 +153,7 @@ def sync_ticker(ticker, fiscal_period="Q4", fiscal_year=2025):
         res = supabase.table("quarterly_earnings").upsert(data, on_conflict="ticker_eod,fiscal_period").execute()
         print(f"[OK] Successfully synchronized {ticker}.")
     except Exception as e:
-        print(f"[ERR] Dubabase Sync failed for {ticker}: {e}")
+        print(f"[ERR] Supabase Sync failed for {ticker}: {e}")
 
 def main():
     parser = argparse.ArgumentParser()

@@ -63,10 +63,10 @@ def get_eodhd_earnings(ticker):
 
 def synthesize_missing_data(row, fundamentals=None):
     """Use Gemini to infer missing fields and translate content to German."""
-    model = genai.GenerativeModel('gemma-3-27b-it')
+    model = genai.GenerativeModel('models/gemini-flash-latest')
     
     ticker = row.get('ticker_eod')
-    current_content = row.get('markdown_content', '')
+    current_content = row.get('markdown_content') or ''
     company_name = row.get('company_name', ticker)
     
     safe_fundamentals = {}
@@ -81,15 +81,21 @@ def synthesize_missing_data(row, fundamentals=None):
     You are a Senior Strategic Financial Analyst and Translator. 
     Analyze the following data for {company_name} ({ticker}).
     
-    Existing Report: {current_content[:1000]}...
+    Existing Report Context: {current_content[:1000]}...
     Fundamental Data: {json.dumps(safe_fundamentals) if safe_fundamentals else 'Not available'}
+    
+    CRITICAL INSTRUCTIONS:
+    - DO NOT use generic boilerplate like "Compounder thesis" or "Institutional analysis" unless it's strictly supported by recent data.
+    - Be HIGHLY SPECIFIC to {company_name}'s recent performance, sector tailwinds, and risks.
+    - Ensure the logic flows from the provided fundamentals (Valuation, Highlights).
+    - If specific earnings metrics (EPS, Revenue) are in the fundamentals, use them accurately.
     
     Tasks:
     1. Determine a 1-100 Impact Score (influence on sector).
     2. Suggest a Guidance Signal (Positive, Negative, Neutral).
     3. Suggest a Recommendation (Buy, Sell, Hold, Accumulate, Strategic Buy).
-    4. Provide financial metrics: eps_actual, eps_estimate, and revenue_actual.
-    5. Write/Complete the 'markdown_content' (detailed professional logic summary, 500 words).
+    4. Provide financial metrics: eps_actual, eps_estimate, and revenue_actual (in millions/billions as appropriate).
+    5. Write/Complete the 'markdown_content' (detailed professional logic summary, 600 words). Focus on strategic shifts, margins, and competitive positioning.
     6. Write a concise 'executive_summary' (main takeaways, 100 words).
     7. TRANSLATE tasks 5 and 6 into German for 'markdown_content_de' and 'executive_summary_de'.
     

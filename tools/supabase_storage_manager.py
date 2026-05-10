@@ -15,25 +15,24 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from supabase import create_client, Client
 from dotenv import load_dotenv
+
+# Ensure project root is in sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.supabase_client import get_supabase_client
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Konfiguration (can be overridden by env vars)
+# Centralized configuration
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://nayggiozebvwqnpjzvvn.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 def upload_file(file_path: Path, bucket_name: str, ticker_eod: str, quarter: str, year: str) -> str:
     """
     Uploads a file to Supabase Storage and returns the public URL.
     """
-    if not SUPABASE_KEY:
-        print("[ERR] SUPABASE_SERVICE_ROLE_KEY environment variable not set.")
-        sys.exit(1)
-
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    supabase = get_supabase_client()
     
     # Naming convention: {ticker_eod}/{quarter}_{fiscal_year}_{filename}
     file_name = file_path.name
@@ -69,10 +68,7 @@ def update_queue_status(ticker: str, status: str = 'completed'):
     """
     Updates the status of the latest pending request in analysis_queue for a ticker.
     """
-    if not SUPABASE_KEY:
-        return
-
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    supabase = get_supabase_client()
     
     # We want to match the ticker root (e.g., AAPL) or full ticker (AAPL.US)
     ticker_root = ticker.split('.')[0]
@@ -104,10 +100,7 @@ def update_database(ticker_eod: str, quarter: str, year: str, pdf_url: str = Non
     """
     Updates the quarterly_earnings table with the report URLs.
     """
-    if not SUPABASE_KEY:
-        return
-
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    supabase = get_supabase_client()
     
     update_data = {}
     if pdf_url:

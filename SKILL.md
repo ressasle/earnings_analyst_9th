@@ -9,8 +9,9 @@ description: >
 
 | Module | Role | Responsible Tools |
 | --- | --- | --- |
-| **Data Populator** | Ingests data and populates Supabase SSOT. | `sync_earnings_data.py`, `sync_presentation_data.py` |
-| **Institutional Editor** | Generates branded artifacts (PDF → Audio). | `pipeline_editor.py`, `generate_earnings_pdf.py`, `generate_audio.py` |
+| **Data Populator** | Ingests data and populates Supabase SSOT. | `sync_earnings_data.py`, `sync_presentation_data.py`, `data_completion_v1.py`, `enrich_price_movements.py` |
+| **Institutional Editor** | Generates high-fidelity narratives and PDF/Audio artifacts. | `Giga_Expansion_1515.py` (Main PDF Tool), `pipeline_editor.py`, `generate_audio.py` |
+| **Storage & Sync** | Manages artifact uploads and URL persistence. | `supabase_storage_manager.py`, `pipeline_editor.py`, `purge_and_sync_institutional.py` |
 | **Batch Orchestrator**| Processes all approved/un-uploaded records. | `pipeline_editor.py --batch-approved` |
 
 ---
@@ -125,16 +126,20 @@ The final page of every PDF report must contain:
 08_quarterly-earnings-analyst/
 ├── SKILL.md                    ← The SOP (this file)
 ├── tools/
-│   ├── sync_earnings_data.py   ← Data Populator (Ingestion)
-│   ├── pipeline_editor.py      ← **Atomic Orchestrator** (Gen + Sync)
-│   ├── Giga_Expansion_1515.py  ← Giga-Density Narrative Generator
-│   ├── generate_earnings_pdf.py← PDF Generator Engine
-│   ├── generate_audio.py       ← Branded Audio Engine (TTS)
-│   ├── final_audit_99.py       ← Institutional Audit Script
-│   ├── purge_and_sync_institutional.py ← Recovery Tool (Hard Clean)
-│   └── upload_artifacts.py     ← Legacy/Manual Sync Utility
-├── output/                     ← Staging area for artifacts
-└── resources/                  ← Brand Assets (Logos, CSS)
+│   ├── sync_earnings_data.py       ← **Data Populator** (Initial Ingestion & Duplicate Guard)
+│   ├── pipeline_editor.py          ← **Atomic Orchestrator** (Gen + Sync + Status Management)
+│   ├── Giga_Expansion_1515.py      ← **Main Tool for PDF Generation** (High-Fidelity Mega-Narratives)
+│   ├── generate_earnings_pdf.py    ← PDF Generator Engine (Underlying conversion)
+│   ├── generate_audio.py           ← Branded Audio Engine (TTS & Script Archiving)
+│   ├── supabase_storage_manager.py ← **Storage Master** (Manual/Utility Upload & URL Sync)
+│   ├── data_completion_v1.py       ← **Data Enricher** (Backfills missing metrics & translations)
+│   ├── enrich_price_movements.py   ← **Price Movement Enricher** (7d drift + post-earnings reaction)
+│   ├── enrich_earnings_dates.py    ← Earnings Date Enricher (next/last date sync)
+│   ├── final_audit_99.py           ← Institutional Audit Script
+│   ├── purge_and_sync_institutional.py ← Recovery Tool (Hard Clean & Storage Resync)
+│   └── upload_artifacts.py         ← Legacy/Manual Sync Utility
+├── output/                         ← Staging area for artifacts
+└── resources/                      ← Brand Assets (Logos, CSS)
 ```
 
 ---
@@ -152,9 +157,49 @@ For a report to be considered "Client-Ready," the following columns **must** be 
 - `pdf_report_url_de`: Valid Supabase Storage link to the German PDF.
 - `audio_report_url_de`: Valid Supabase Storage link to the German MP3.
 - `impact_score`: Deterministic calculation from `sync_earnings_data.py`.
+- `price_movement_7d_prior`: % price change in the 7 trading days before the report. Populated by `enrich_price_movements.py`.
+- `price_movement_post_earnings`: % price change from report-date close to next-day close. Populated by `enrich_price_movements.py`.
+- `movement_reasoning`: Fact-based text summarizing the EPS beat/miss and price reaction. Populated by `enrich_price_movements.py`.
 - `review_status`: Must be `approved`.
 - `uploaded`: Set to `true` after successful processing.
 - `status`: Set to `published` once artifacts are synced.
+- `manual_ingestion`: Free-text field. Contains high-fidelity analyst notes, strategic observations, and primary source data entered directly by the user. This field is a **protected, user-controlled column**. It is used as **read-only input** for the Giga Expansion engine and is **never modified or overwritten** by any script.
+
+---
+
+### 6.7 Analyst Insight Pathway (Manual Ingestion)
+
+The `manual_ingestion` column (`TEXT`, nullable) is a persistent, analyst-controlled field. It is used to store qualitative insights, proprietary observations, and specific data points retrieved from primary sources (IR PDFs, transcripts, etc.) that the automated API cannot capture.
+
+**Rules for Manual Ingestion:**
+1. **Persistent Input**: Once entered by the user, this field is **immutable for automated scripts**. Tools such as `sync_earnings_data.py` and `Giga_Expansion_1515.py` are strictly prohibited from writing to or modifying this column.
+2. **Analytical Multiplier**: The Giga Expansion tool uses this field to enrich the 1,500-word narrative.
+3. **Zero Process Disclosure**: Content from this field must be integrated into the narrative without referencing the field name, the fact that it was "manually ingested," or the specific data source (e.g., "Analyst Note: ..."). It must read as part of the core institutional analysis.
+4. **Approval Required**: Once notes are added, `review_status` should be set to `approved` to trigger the production pipeline.
+
+**Guard behavior in `sync_earnings_data.py`:** The script checks for existing content in `manual_ingestion`. If populated, it treats the record as "analyst-protected" and will not perform API-driven updates to core narrative fields to prevent conflict with custom observations.
+
+### 6.8 The Giga Expansion Workflow (Analytical Multiplier)
+
+The **Giga Expansion** workflow (powered by `tools/Giga_Expansion_1515.py`) is designed for high-conviction assets where standard API data is insufficient. This workflow uses the `manual_ingestion` column as an analytical multiplier.
+
+**Steps to execute a Giga Expansion:**
+1. **Curate Ingestion Data**: Populate the `manual_ingestion` column in Supabase with structured markdown (Key Points, Strategic Positioning, Demand, Profits, etc.).
+2. **Execute Giga Tool**:
+   ```powershell
+   python tools/Giga_Expansion_1515.py --ticker [TICKER] --period "[PERIOD]"
+   ```
+   *Note: This script automatically pulls the `manual_ingestion` content and injects it into Section 6C of the generated narrative.*
+3. **Orchestrate Artifacts**:
+   ```powershell
+   python tools/atomic_orchestrator.py --ticker [TICKER]
+   ```
+   *This generates the HTML, PDF, and Audio using the expanded 1,500-word narrative and syncs them to Supabase Storage.*
+
+**Why use Giga Expansion?**
+- **Depth**: Scales the report to 1,500+ words, meeting institutional density standards.
+- **Precision**: Merges live EODHD valuation metrics with manual analyst insights.
+- **Efficiency**: Automates the "Institutional Metadata" and "Dual-Script" audio paths while preserving custom strategic notes.
 
 ### 6.2 Bilingual Production (German)
 **Objective**: Generate localized artifacts for high-net-worth German-speaking clients.
@@ -209,10 +254,11 @@ To track client delivery progress across the entire institutional portfolio, col
 - `last_presentation_period`: Text (e.g., "2026-03-31").
 - `production_updated_at`: Timestamp of the latest artifact synchronization.
 
-### 6.4 The `ticker_eod` Unique ID System
-To ensure we **never produce artifacts for the same company twice**, the entire system relies on `ticker_eod` as the universal unique identifier.
-- **Uniqueness Constraint:** Every row in `quarterly_earnings` must have a unique composite key combining `ticker_eod` and `fiscal_period`. 
-- **Relational Integrity:** Across layers (from `kasona_portfolio_assets` down to the `analysis_queue` and storage buckets), `ticker_eod` (e.g., `AAPL.US`, `BERG-B.ST`) is the singular anchor ID ensuring matching logic works deterministically and prevents duplication.
+### 6.4 The `ticker_eod` Unique ID System & Duplicate Prevention
+To ensure we **never produce artifacts for the same company twice**, the entire system relies on `ticker_eod` as the universal unique identifier and a strict idempotency logic.
+- **Uniqueness Constraint:** The `quarterly_earnings` table enforces a **Composite Unique Key** on `(ticker_eod, fiscal_period)`. This ensures no duplicate records can exist for the same company in the same quarter.
+- **Idempotent Population:** `sync_earnings_data.py` utilizes the `UPSERT` operation with the `on_conflict` directive targeting the composite key. This allows the script to update existing records without creating duplicates.
+- **Relational Integrity:** Across layers (from `kasona_portfolio_assets` down to the `analysis_queue` and storage buckets), `ticker_eod` (e.g., `AAPL.US`, `BERG-B.ST`) is the singular anchor ID ensuring matching logic works deterministically and prevents duplication. The system checks for existing artifacts before generation to ensure idempotency.
 ### 6.5 Required Column Matrix (Bilingual Support)
 For "DACH-Region" ready reports:
 - `pdf_report_url_de`: German PDF link.
@@ -226,6 +272,7 @@ For "DACH-Region" ready reports:
 - [ ] **Branding Compliance**: Does the PDF contain the mandatory final page with the disclaimer and Kasona website link?
 - [ ] **Ticker Branding**: Does the cover page feature the official company logo (acquired from Brandfetch/local if EODHD fails)?
 - [ ] **Data Integrity**: Are **all** columns (Score, Recommendation, URLs) populated in the table?
+- [ ] **Price Movements**: Are `price_movement_7d_prior`, `price_movement_post_earnings`, and `movement_reasoning` filled for all tickers with a `report_date`? Run `enrich_price_movements.py` if not.
 - [ ] **Portfolio Sync**: Are the `earnings_produced` and `last_period` columns updated in `kasona_portfolio_assets`?
 - [ ] **Legacy Review**: Have old records been synchronized with fresh sanitized artifacts?
 - [ ] **SSOT Verification**: Is Supabase fully populated before generation?
@@ -262,8 +309,7 @@ This section documents **every** Supabase interaction (reads, writes, storage op
 
 | Operation | Table / Bucket | Type | Description |
 | :--- | :--- | :--- | :--- |
-| **Write EN narrative** | `quarterly_earnings` | `UPDATE` | Sets `markdown_content`, `review_status = 'approved'`, `uploaded = false`, `updated_at = now()` for each ticker. |
-| **Write DE narrative** | `quarterly_earnings` | `UPDATE` | Sets `markdown_content_de`, `review_status = 'approved'`, `updated_at = now()` for German-localized content. |
+| **Artifact Creation** | `quarterly_earnings` | `UPDATE` | Sets `markdown_content`, `review_status = 'approved'`, `uploaded = false`. This is the **main tool for PDF/Audio initiation** for the expansion portfolio. |
 | **Existence check** | `quarterly_earnings` | `SELECT id` | Confirms the record exists before attempting the UPDATE (prevents silent no-ops). |
 
 ### 7.3 Stage 3 — Review & Approval (Manual / Dashboard)
@@ -317,6 +363,32 @@ This section documents **every** Supabase interaction (reads, writes, storage op
 | Operation | Table / Bucket | Type | Description |
 | :--- | :--- | :--- | :--- |
 | **Full scan** | `quarterly_earnings` | `SELECT ticker_eod, updated_at, uploaded, markdown_content` | Reads all records for compliance checks: freshness, upload status, and narrative word-count density. |
+
+### 7.9 Utility: Price Movement Enrichment (`enrich_price_movements.py`)
+
+Populates three missing financial performance metrics for all rows in `quarterly_earnings` that have a valid `report_date` but are missing price movement data. Fetches adjusted close prices from EODHD and computes drift and reaction percentages.
+
+| Operation | Table / Bucket | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **Missing row fetch** | `quarterly_earnings` | `SELECT id, ticker_eod, company_name, report_date, quarter, fiscal_year, eps_actual, eps_estimate` | Fetches all rows where `report_date IS NOT NULL` and either `price_movement_7d_prior` or `price_movement_post_earnings` is NULL. Deduplicates by `id`. |
+| **Filter** | _(in-memory)_ | — | Skips rows with `PRIVATE.*`, `MARKET_OVERVIEW_*` prefixes and known non-market tickers (private companies, crypto). |
+| **EOD price fetch** | EODHD API | `GET /api/eod/{ticker}` | Fetches adjusted close prices over a ±20-calendar-day window around the `report_date`. Rate-limited to 2.5-second delay per call. |
+| **Calculation** | _(in-memory)_ | — | `price_movement_7d_prior`: % change from 8 trading days before to 1 trading day before the report. `price_movement_post_earnings`: % change from report-date close to next-day close. |
+| **Reasoning generation** | _(in-memory)_ | — | Builds `movement_reasoning` using EPS beat/miss threshold (±2%), pre-drift threshold (±1.5%), and post-reaction threshold (±0.5% / ±3%). |
+| **DB write** | `quarterly_earnings` | `UPDATE` | Writes `price_movement_7d_prior`, `price_movement_post_earnings`, `movement_reasoning`, and `updated_at` for each processed row. |
+
+**CLI Flags:**
+```bash
+python tools/enrich_price_movements.py            # Live run (writes to DB)
+python tools/enrich_price_movements.py --dry-run  # Preview only, no writes
+python tools/enrich_price_movements.py --verbose  # Verbose per-ticker output
+```
+
+**Last Run Results (2026-04-30):**
+- **66** actionable tickers processed
+- **58** rows updated successfully
+- **8** skipped (insufficient EODHD price history — primarily small-cap Nordic stocks)
+- **0** errors
 
 ---
 
